@@ -59,10 +59,11 @@
 | **驱动** | 仅 `brcmfmac`（博通） | 不限（`brcmfmac` / `iwlwifi` / `mt76` 等均可，需改 `DRIVER_MODULE`） |
 | **芯片型号** | 不局限于某一型号，脚本从 dmesg 自动探测（如 `brcmfmac4339`）。**但**依赖官方固件库存在对应的 `<芯片>-sdio.clm_blob`，且能找到板级 NVRAM；部分芯片缺这些文件，需手动离线提供 | 与芯片型号无关 |
 | **系统要求** | Debian 系 + `iw` / `curl` / `openssl` + systemd + root | Debian 系 + NetworkManager + `nmcli` / `ip` / `ping` + systemd + root |
+| **已适配机型** | `jp-tvbox`（荐片盒子）：ARM 盒子 + SDIO 博通网卡，方案 A 已实测适配 | 可作为通用兜底叠加使用 |
 
 **一句话结论：**
 
-- 你的设备若是 **ARM 盒子 + SDIO 博通网卡**（本项目的原始场景）：两套方案都适用。
+- 你的设备若是 **ARM 盒子 + SDIO 博通网卡**（如 `jp-tvbox` 荐片盒子，本项目的原始场景）：两套方案都适用。
 - 若是 **x86 主机 / PCIe 或 USB 无线网卡**：方案 A **不适用**（文件名规则不同），可尝试方案 B 做掉线自愈。
 - 若是非博通驱动（`iwlwifi` / `mt76` 等）：方案 A 不适用，方案 B 可通用。
 
