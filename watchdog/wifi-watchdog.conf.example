@@ -1,0 +1,47 @@
+# ============================================================
+# wifi-watchdog 配置模板
+# 安装时复制到 /etc/wifi-watchdog.conf，安装脚本会自动填入已识别的
+# WIFI_IFACE / WIFI_CONNECTION / WIFI_SSID，其余保持默认值即可。
+# 注意：这是 shell 语法文件，字符串用双引号，布尔/数字直接写。
+# ============================================================
+
+# 无线网卡接口名（通常是 wlan0，可用 ip link 查看）
+WIFI_IFACE="wlan0"
+
+# NetworkManager 连接名。留空则自动识别当前激活的 WiFi 连接。
+# 可用 nmcli con show 查看，例如 "MyHomeWiFi-wlan0"
+WIFI_CONNECTION=""
+
+# 目标 WiFi 名称。用于在多个连接中自动挑选，可留空。
+WIFI_SSID=""
+
+# 连通性探测目标。留空则自动使用 wlan0 的默认网关（推荐，只验证局域网）。
+# 也可以填写公网地址如 "223.5.5.5"，但公网断开会触发误修复。
+PING_TARGET=""
+
+# 健康检查周期（秒）
+CHECK_INTERVAL=30
+
+# 连续失败多少次后触发修复（防止偶发抖动）
+FAIL_THRESHOLD=3
+
+# 两次修复之间的最小间隔（秒）
+RESET_COOLDOWN=120
+
+# 每小时最多自动修复次数，防止疯狂重启网络
+MAX_RESETS_PER_HOUR=6
+
+# 是否允许在多次修复失败后自动重启系统：0=禁止（推荐），1=允许
+AUTO_REBOOT=0
+
+# 触发自动重启所需的连续失败次数（仅 AUTO_REBOOT=1 时有效）
+REBOOT_AFTER_FAILS=6
+
+# 是否启用无线驱动重载：0=关闭（推荐先关闭），1=开启（第三级修复手段）
+# 驱动模块名按实际网卡填写：博通 brcmfmac / 英特尔 iwlwifi / 联发科 mt76 等
+DRIVER_RESET=0
+DRIVER_MODULE="brcmfmac"
+
+# 日志文件。填 "none" 可关闭文件日志（systemd journal 仍会记录）
+LOG_FILE="/var/log/wifi-watchdog.log"
+LOG_MAX_KB=1024

@@ -1,0 +1,16 @@
+# 日志与运行状态文件
+*.log
+*.log.*
+reset-times
+
+# 临时与备份文件
+*.tmp
+*.bak
+*.old
+*~
+
+# 编辑器 / 系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

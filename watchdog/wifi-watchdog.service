@@ -1,0 +1,17 @@
+[Unit]
+Description=WiFi Watchdog - 自动修复 WiFi 断线（禁用随机 MAC）
+Documentation=file:/usr/local/share/doc/watchdog/README.md
+Wants=NetworkManager.service
+After=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/wifi-watchdog
+Restart=always
+RestartSec=10
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

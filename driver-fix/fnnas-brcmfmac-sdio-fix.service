@@ -1,0 +1,14 @@
+[Unit]
+Description=FnNAS WiFi 驱动文件 OTA 后自动恢复（regulatory.db / CLM blob）
+Documentation=file:/usr/local/share/doc/fnnas-brcmfmac-sdio-fix/README.md
+DefaultDependencies=no
+After=local-fs.target
+Before=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fnnas-brcmfmac-sdio-fix --repair-if-needed
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
