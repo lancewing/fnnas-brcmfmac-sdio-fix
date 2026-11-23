@@ -16,7 +16,7 @@ set -u
 set -o pipefail
 
 NAME="fnnas-brcmfmac-sdio-fix"
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 CHIP="${CHIP:-brcmfmac4339}"                 # 由 dmesg 自动探测，失败时用此默认值
 BOARD_NVRAM="${BOARD_NVRAM:-}"               # 板级 NVRAM 文件名，留空则自动探测
@@ -25,6 +25,7 @@ FIRMWARE_DIR="${FIRMWARE_DIR:-/lib/firmware}"
 BRCM_DIR="${BRCM_DIR:-$FIRMWARE_DIR/brcm}"
 CONF_DIR="${CONF_DIR:-/etc/fnnas-brcmfmac-sdio-fix}"
 CACHE_DIR="${CACHE_DIR:-$CONF_DIR/cache}"
+LOCAL_DIR="${LOCAL_DIR:-$CONF_DIR/local-files}"    # 本地更新目录：优先于在线下载
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/fnnas-brcmfmac-sdio-fix}"
 UDEV_RULE="${UDEV_RULE:-/etc/udev/rules.d/99-wifi-regdom-cn.rules}"
 NM_CONF="${NM_CONF:-/etc/NetworkManager/conf.d/99-wifi-powersave-off.conf}"
@@ -153,10 +154,11 @@ check_clm_blob() {
     if [[ -s "$f" ]]; then
         report OK "CLM blob 存在: $f"
     else
-        report FAIL "缺少 CLM blob: $f（驱动会警告 channels available 受限）"
+        report INFO "未安装独立 CLM blob: $f（可选；BCM4339 官方固件已内嵌 CLM 信息）"
+        report INFO "如需强制提供，请把 ${CHIP}-sdio.clm_blob 放入 $LOCAL_DIR 后重跑 --fix"
     fi
     if dmesg 2>/dev/null | grep -q 'no clm_blob available'; then
-        report FAIL "内核日志中有 'no clm_blob available'（本次启动未加载到信道表）"
+        report INFO "内核日志提示 'no clm_blob available'（独立 CLM 可选，不代表驱动加载失败）"
     fi
 }
 
@@ -187,15 +189,16 @@ check_powersave() {
 }
 
 check_persistence() {
-    local n=0
+    local required=0 f
     for f in regulatory.db regulatory.db.p7s; do
-        [[ -s "$CACHE_DIR/$f" ]] && n=$((n + 1))
+        [[ -s "$CACHE_DIR/$f" ]] && required=$((required + 1))
     done
-    [[ -s "$CACHE_DIR/${CHIP}-sdio.clm_blob" ]] && n=$((n + 1))
-    if [[ $n -eq 3 ]]; then
-        report OK "OTA 恢复缓存完整（$CACHE_DIR，3 个文件）"
+    local clm_state="可选未缓存"
+    [[ -s "$CACHE_DIR/${CHIP}-sdio.clm_blob" ]] && clm_state="已缓存"
+    if [[ $required -eq 2 ]]; then
+        report OK "OTA 恢复缓存完整（必需文件 2/2，CLM blob $clm_state）"
     else
-        report FAIL "OTA 恢复缓存不完整（找到 $n/3 个文件），OTA 后修复可能丢失"
+        report FAIL "OTA 恢复缓存不完整（必需文件 $required/2，CLM blob 可选）"
     fi
 }
 
@@ -229,10 +232,17 @@ backup_file() {
 }
 
 fetch_file() {
-    # $1 = URL, $2 = 目标路径；优先使用缓存
+    # $1 = URL, $2 = 目标路径；优先级：本地目录 > 缓存 > 在线下载
     local url="$1" dest="$2" name
     name=$(basename "$dest")
-    mkdir -p "$(dirname "$dest")" "$CACHE_DIR" 2>/dev/null || true
+    mkdir -p "$(dirname "$dest")" "$CACHE_DIR" "$LOCAL_DIR" 2>/dev/null || true
+
+    if [[ -s "$LOCAL_DIR/$name" ]]; then
+        install -m 644 "$LOCAL_DIR/$name" "$CACHE_DIR/$name"
+        install -m 644 "$LOCAL_DIR/$name" "$dest"
+        log INFO "从本地目录安装: $LOCAL_DIR/$name -> $dest"
+        return 0
+    fi
 
     if [[ -s "$CACHE_DIR/$name" ]]; then
         install -m 644 "$CACHE_DIR/$name" "$dest"
@@ -240,13 +250,13 @@ fetch_file() {
         return 0
     fi
 
-    have curl || { log ERROR "未找到 curl，无法下载 $name；请用 --fix-offline 提供本地文件"; return 1; }
+    have curl || { log ERROR "未找到 curl，无法下载 $name；请把文件放入 $LOCAL_DIR 后重跑 --fix"; return 1; }
     local tmp
     tmp=$(mktemp)
     log INFO "下载 $name: $url"
     if ! curl -fsSL --connect-timeout 15 --retry 2 "$url" -o "$tmp"; then
         rm -f "$tmp"
-        log ERROR "下载失败: $name（网络不通时请用 --fix-offline）"
+        log ERROR "下载失败: $name（可把文件放入 $LOCAL_DIR 后重跑 --fix）"
         return 1
     fi
     if [[ ! -s "$tmp" ]] || [[ $(stat -c%s "$tmp" 2>/dev/null || echo 0) -lt 100 ]]; then
@@ -274,10 +284,15 @@ fix_regdb() {
 }
 
 fix_clm() {
-    log INFO "修复 CLM blob（国家信道表）"
+    log INFO "修复 CLM blob（国家信道表，可选）"
     local dest="$BRCM_DIR/${CHIP}-sdio.clm_blob"
     backup_file "$dest"
-    fetch_file "$URL_CLM" "$dest"
+    if fetch_file "$URL_CLM" "$dest"; then
+        return 0
+    fi
+    log WARN "跳过独立 CLM blob：官方源未提供或下载失败（BCM4339 常见，CLM 已内嵌固件）"
+    log WARN "如需强制安装，请把 ${CHIP}-sdio.clm_blob 放入 $LOCAL_DIR/ 后重跑 --fix"
+    return 0
 }
 
 fix_nvram() {
@@ -372,11 +387,17 @@ repair_if_needed() {
 }
 
 # ------------------------------ 命令行 ------------------------------
-# 允许把 --cache-dir 放在前面，便于测试/自定义缓存位置
-while [[ $# -gt 0 && "$1" == "--cache-dir" ]]; do
-    [[ -n "${2:-}" ]] || { echo "错误: --cache-dir 需要一个目录参数" >&2; exit 2; }
-    CACHE_DIR="$2"
-    shift 2
+# 允许把 --cache-dir / --local-dir 放在前面，便于测试/自定义目录
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cache-dir)
+            [[ -n "${2:-}" ]] || { echo "错误: --cache-dir 需要一个目录参数" >&2; exit 2; }
+            CACHE_DIR="$2"; shift 2 ;;
+        --local-dir)
+            [[ -n "${2:-}" ]] || { echo "错误: --local-dir 需要一个目录参数" >&2; exit 2; }
+            LOCAL_DIR="$2"; shift 2 ;;
+        *) break ;;
+    esac
 done
 
 usage() {
@@ -385,18 +406,20 @@ usage() {
 
 选项:
   --check            全面诊断（默认，只读，不修改系统）
-  --fix              执行修复；优先用本地缓存，缓存缺失时尝试在线下载
-  --fix-offline DIR  从目录 DIR 读取文件放入缓存后离线修复（设备无网络时用）
+  --fix              执行修复；优先级：本地目录 > 缓存 > 在线下载
+  --fix-offline DIR  从目录 DIR 读取文件后离线修复（等价于 --fix-local）
+  --fix-local DIR    从本地目录 DIR 更新文件并修复（推荐：下载失败时用）
   --repair-if-needed 开机自检：仅当缓存文件丢失/变化时从 /etc 恢复（供 systemd 用）
   --cache-dir DIR    指定缓存目录（默认 /etc/fnnas-brcmfmac-sdio-fix/cache）
+  --local-dir DIR    指定本地文件目录（默认 /etc/fnnas-brcmfmac-sdio-fix/local-files）
   --version          显示版本
   -h, --help         显示本帮助
 
-离线修复所需文件（放在 DIR 中，<芯片> 由 dmesg 自动探测）:
-  regulatory.db
-  regulatory.db.p7s
-  <芯片>-sdio.clm_blob
-  <芯片>-sdio.<板型>.bin                   (板级 NVRAM，可选，有则一起安装)
+本地/离线目录所需文件（<芯片> 由 dmesg 自动探测）:
+  regulatory.db                              (必需)
+  regulatory.db.p7s                          (必需)
+  <芯片>-sdio.clm_blob                       (可选；BCM4339 官方源无此文件)
+  <芯片>-sdio.<板型>.bin                     (板级 NVRAM，可选，有则一起安装)
 EOF
 }
 
@@ -420,25 +443,32 @@ case "${1:---check}" in
             log WARN "部分文件修复失败，请按提示补齐后再运行 --check"
         fi
         exit $rc ;;
-    --fix-offline)
+    --fix-offline|--fix-local)
         require_root
         detect_chip
         [[ -n "${2:-}" && -d "$2" ]] || { echo "错误: 请提供包含修复文件的目录" >&2; exit 2; }
-        mkdir -p "$CACHE_DIR"
+        LOCAL_DIR="$2"
+        mkdir -p "$CACHE_DIR" "$LOCAL_DIR"
         for f in regulatory.db regulatory.db.p7s "${CHIP}-sdio.clm_blob"; do
-            [[ -s "$2/$f" ]] && { install -m 644 "$2/$f" "$CACHE_DIR/$f"; log INFO "已载入缓存: $f"; } \
-                             || log WARN "离线目录中未找到 $f"
+            if [[ -s "$LOCAL_DIR/$f" ]]; then
+                install -m 644 "$LOCAL_DIR/$f" "$CACHE_DIR/$f"
+                log INFO "已载入缓存: $f"
+            elif [[ "$f" == *clm_blob ]]; then
+                log INFO "本地目录中无 $f（可选，BCM4339 可跳过）"
+            else
+                log WARN "本地目录中未找到必需文件 $f"
+            fi
         done
         # 板级 NVRAM：把离线目录里任意 <chip>-sdio.<板型>.bin 载入缓存
-        local bnv
-        for bnv in "$2"/"${CHIP}"-sdio.*.bin; do
+        bnv=""
+        for bnv in "$LOCAL_DIR"/"${CHIP}"-sdio.*.bin; do
             [[ -s "$bnv" ]] || continue
             install -m 644 "$bnv" "$CACHE_DIR/${bnv##*/}"
             BOARD_NVRAM="${bnv##*/}"
             log INFO "已载入缓存: $BOARD_NVRAM"
         done
         detect_board_nvram
-        log INFO "===== 开始离线修复 ====="
+        log INFO "===== 开始本地/离线修复（$LOCAL_DIR）====="
         rc=0
         fix_regdb || rc=1
         fix_clm || rc=1

@@ -57,7 +57,7 @@
 | **CPU 架构** | 架构无关，但**仅在 ARM（如 RK3566）上实测验证**；x86 未见验证案例 | 架构无关，纯 NetworkManager 层逻辑 |
 | **无线总线接口** | **仅 SDIO**（文件名按 `<芯片>-sdio.*` 拼装）。PCIe / USB 接口的博通网卡**不适用** | 不限接口（只认系统里的无线网卡接口名，默认 `wlan0`） |
 | **驱动** | 仅 `brcmfmac`（博通） | 不限（`brcmfmac` / `iwlwifi` / `mt76` 等均可，需改 `DRIVER_MODULE`） |
-| **芯片型号** | 不局限于某一型号，脚本从 dmesg 自动探测（如 `brcmfmac4339`）。**但**依赖官方固件库存在对应的 `<芯片>-sdio.clm_blob`，且能找到板级 NVRAM；部分芯片缺这些文件，需手动离线提供 | 与芯片型号无关 |
+| **芯片型号** | 不局限于某一型号，脚本从 dmesg 自动探测（如 `brcmfmac4339`）。独立 `<芯片>-sdio.clm_blob` 为可选项：BCM4339 官方固件没有该文件（CLM 已内嵌），脚本会跳过；板级 NVRAM 可通过本地目录提供 | 与芯片型号无关 |
 | **系统要求** | Debian 系 + `iw` / `curl` / `openssl` + systemd + root | Debian 系 + NetworkManager + `nmcli` / `ip` / `ping` + systemd + root |
 | **已适配机型** | `jp-tvbox`（荐片盒子）：ARM 盒子 + SDIO 博通网卡，方案 A 已实测适配 | 可作为通用兜底叠加使用 |
 
@@ -96,7 +96,8 @@ fnnas-brcmfmac-sdio-fix/
 │   ├── README.md                      #   详细使用说明
 │   ├── fnnas-brcmfmac-sdio-fix.sh     #   诊断 / 修复主脚本
 │   ├── fnnas-brcmfmac-sdio-fix.service#   OTA 后开机自恢复服务
-│   └── install.sh                     #   安装器
+│   ├── install.sh                     #   安装器
+│   └── local-files/                   #   本地更新文件（需自行创建，已 gitignore）
 └── watchdog/                          # 方案 B：网络自愈（可选兜底，架构/驱动无关）
     ├── README.md                      #   详细使用说明
     ├── wifi-watchdog.sh               #   守护脚本
@@ -125,12 +126,14 @@ sudo reboot
 
 安装器默认会：安装脚本与服务 → 诊断 → 尝试修复 → 启用 OTA 开机自恢复。**修复后请重启一次**，让内核重新校验 `regulatory.db`。
 
-若设备已断网无法在线下载，先在联网电脑上备好官方文件，再用离线模式（详见 [方案 A 文档](driver-fix/README.md#五设备已经断网时离线修复)）：
+若在线下载失败（例如 `brcmfmac4339-sdio.clm_blob` 返回 404）或设备已断网，推荐用本地更新：把下载好的文件放到 `driver-fix/local-files/` 后重跑 `sudo bash install.sh`；也可直接指定目录（详见 [方案 A 文档](driver-fix/README.md#五本地更新与离线修复)）：
 
 ```bash
-sudo /usr/local/sbin/fnnas-brcmfmac-sdio-fix --fix-offline /path/to/files
+sudo /usr/local/sbin/fnnas-brcmfmac-sdio-fix --fix-local /path/to/files
 sudo reboot
 ```
+
+`--fix` 的读取优先级为 **本地目录 > OTA 缓存 > 在线下载**；`local-files/` 已加入 `.gitignore`，不会误提交下载的固件文件。
 
 ### 方案 B：网络自愈（可选）
 
@@ -144,9 +147,9 @@ sudo bash install.sh --enable-watchdog
 ### 验证结果
 
 ```bash
-sudo /usr/local/sbin/fnnas-brcmfmac-sdio-fix --check   # 期望全部 [OK]
+sudo /usr/local/sbin/fnnas-brcmfmac-sdio-fix --check   # 期望无 [FAIL]；独立 CLM 缺失为可选提示
 iw reg get | head -3                                 # 期望 country CN
-sudo dmesg | grep -E 'regulatory|clm_blob'            # 期望无签名错误、无 clm_blob 缺失
+sudo dmesg | grep -E 'regulatory|clm_blob'            # 期望无签名错误；BCM4339 的 clm_blob 提示可忽略
 iw dev wlan0 link                                     # 持续稳定，不再周期性断开
 ```
 
@@ -158,8 +161,8 @@ iw dev wlan0 link                                     # 持续稳定，不再周
 
 答：**很可能需要，但脚本已经自动处理了。**
 
-- `regulatory.db`、`.p7s`、`clm_blob` 位于 `/lib/firmware/`，OTA 替换系统时可能被覆盖回有问题的版本；
-- 脚本在修复时会把这些文件**额外缓存到 `/etc/fnnas-brcmfmac-sdio-fix/cache/`**（`/etc` 通常在 OTA 中保留）；
+- `regulatory.db`、`.p7s`（以及芯片需要时的独立 `clm_blob`）位于 `/lib/firmware/`，OTA 替换系统时可能被覆盖回有问题的版本；
+- 脚本在修复时会把这些文件**额外缓存到 `/etc/fnnas-brcmfmac-sdio-fix/cache/`**（`/etc` 通常在 OTA 中保留），本地更新文件则放在 `/etc/fnnas-brcmfmac-sdio-fix/local-files/`；
 - 开机 oneshot 服务 `fnnas-brcmfmac-sdio-fix.service` 会在 NetworkManager 启动前校验文件，发现丢失或被改动就从缓存自动恢复。
 
 正常情况下装一次即可跨 OTA；只有连 `/etc` 都被重置的极端 OTA 才需手动重跑一次 `--fix`。
@@ -181,7 +184,7 @@ iw dev wlan0 link                                     # 持续稳定，不再周
 
 - **x86 / PCIe / USB 网卡**（方案 A）：固件文件名规则不同，脚本按 `-sdio` 拼装会找不到文件；
 - **非博通驱动**（方案 A）：如 `iwlwifi`、`mt76`，不适用；
-- **官方固件库缺文件的芯片**（方案 A）：需自行离线提供 `<芯片>-sdio.clm_blob` 与板级 NVRAM；
+- **官方固件库缺文件的芯片**（方案 A）：如板级 NVRAM 一般需从原厂固件提取；独立 `<芯片>-sdio.clm_blob` 为可选项，仅当确认设备需要时才通过本地目录提供；
 - 路由器 WiFi 名称或密码确实被改过的情况——脚本无法凭空恢复正确密码，需在系统设置里重新输入；
 - 路由器开启了 MAC 黑白名单且配置错误——请确认白名单中填的是设备真实 MAC；
 - 信号过弱、AP 隔离、客户端数量限制等路由器侧问题——需检查路由器，或改接有线。

@@ -22,7 +22,7 @@ SDIO 接口的博通 WiFi 网卡在飞牛OS 上常出现「连上又掉、反复
 
 **能力边界（请注意）：**
 
-- 芯片型号不局限于示例中的 BCM4339，脚本从 dmesg 自动探测（如 `brcmfmac4339`）；但**依赖官方固件库存在对应的 `<芯片>-sdio.clm_blob`、且能找到板级 NVRAM**。部分芯片缺这些文件，需按 [离线修复](#五设备已经断网时离线修复) 手动提供，否则相关检查项会报 FAIL。
+- 芯片型号不局限于示例中的 BCM4339，脚本从 dmesg 自动探测（如 `brcmfmac4339`）。**独立 `<芯片>-sdio.clm_blob` 是可选文件**：BCM4339 在官方 `linux-firmware` 中没有单独的 CLM blob（CLM 信息已内嵌在 `.bin` 固件中），脚本会把缺失按可选信息处理，不再报 FAIL；如确实需要，可通过 [本地更新/离线修复](#五本地更新与离线修复) 提供。板级 NVRAM 同理，找不到时脚本会把通用 `.txt` 的 `country` 改为 `CN` 作为折中。
 - 上表第 4 项「固件版本过旧」：本脚本只做**诊断提示**，**不会升级固件**。若确认是固件问题，需另行更换固件文件。
 - 架构方面脚本本身无架构判断，但**仅在 ARM 设备上实测**；x86 上的 PCIe / USB 网卡因文件名规则不同，本方案不适用。
 
@@ -34,7 +34,7 @@ SDIO 接口的博通 WiFi 网卡在飞牛OS 上常出现「连上又掉、反复
 
 **很可能需要，但脚本已经替你自动处理了。**
 
-- `/lib/firmware/regulatory.db`、`.p7s`、`brcm/brcmfmac<芯片>-sdio.clm_blob` 都在根文件系统里，OTA 替换系统时可能被覆盖或恢复成有问题的版本。
+- `/lib/firmware/regulatory.db` 与 `.p7s` 在根文件系统里，OTA 替换系统时可能被覆盖或恢复成有问题的版本；独立 `brcm/brcmfmac<芯片>-sdio.clm_blob`（若芯片需要）同理。
 - `/etc` 下的配置（udev 规则、crda、NetworkManager 配置）一般保留，但不能完全依赖。
 
 因此脚本采用双层设计：
@@ -81,31 +81,59 @@ sudo bash install.sh --uninstall       # 卸载
 
 ---
 
-## 五、设备已经断网时：离线修复
+## 五、本地更新与离线修复
 
-在有网络的电脑上准备以下文件，放到一个目录（例如 `/volume1/usb/fix-files/`）。`<芯片>` 由脚本从 dmesg 自动探测，常见为 `brcmfmac4339`：
+适用于两种场景：
+
+- 在线下载官方文件失败（例如 `brcmfmac4339-sdio.clm_blob` 返回 404）；
+- 设备已经断网，需要在联网电脑上备好文件后拷贝到设备。
+
+### 1. 最简做法：放到 `driver-fix/local-files/` 后重跑安装器
+
+在 `driver-fix/` 下新建 `local-files/`，放入以下文件（`<芯片>` 由脚本从 dmesg 自动探测，常见为 `brcmfmac4339`）：
 
 ```
-regulatory.db                       # wireless-regdb 官方数据库
-regulatory.db.p7s                   # 对应签名
-<芯片>-sdio.clm_blob                # linux-firmware 中的 CLM blob
-<芯片>-sdio.<板型>.bin              # 板级 NVRAM（可选，能找到就放）
+regulatory.db                       # 必需，wireless-regdb 官方数据库
+regulatory.db.p7s                   # 必需，对应签名
+<芯片>-sdio.clm_blob                # 可选；BCM4339 官方源无此文件，通常不需要
+<芯片>-sdio.<板型>.bin              # 可选，板级 NVRAM
 ```
 
 然后在设备上：
 
 ```bash
-sudo /usr/local/sbin/fnnas-brcmfmac-sdio-fix --fix-offline /volume1/usb/fix-files
+cd /path/to/driver-fix
+mkdir -p local-files
+# 把上面准备好的文件拷入 local-files/
+sudo bash install.sh
 sudo reboot
 ```
 
-前三个文件可从 kernel.org 官方仓库获取：
+`install.sh` 会把 `local-files/` 复制到 `/etc/fnnas-brcmfmac-sdio-fix/local-files/`。此后 `--fix` 的读取优先级为：**本地目录 > OTA 缓存 > 在线下载**，因此文件下载失败时也能完成修复。
 
-- `https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db`
-- `https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db.p7s`
-- `https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/brcm/brcmfmac4339-sdio.clm_blob`（把 `4339` 换成你的芯片型号）
+### 2. 直接指定任意本地目录
 
-板级 NVRAM 文件名形如 `brcmfmac4339-sdio.<板型>.bin`，需要从该机型的原厂固件或社区资源提取；找不到也没关系，脚本会把通用 `<芯片>-sdio.txt` 的 `country` 改成 `CN` 作为折中。设备 dmesg 里若出现 `Direct firmware load for brcm/xxx failed`，那个 `xxx` 就是需要的文件名。
+```bash
+sudo /usr/local/sbin/fnnas-brcmfmac-sdio-fix --fix-local /path/to/files
+sudo reboot
+```
+
+`--fix-offline DIR` 仍然可用，与 `--fix-local DIR` 等价。也可以只设置默认本地目录：
+
+```bash
+sudo /usr/local/sbin/fnnas-brcmfmac-sdio-fix --local-dir /path/to/files --fix
+```
+
+### 3. 文件从哪里来
+
+- `regulatory.db` / `regulatory.db.p7s`：
+  - `https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db`
+  - `https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db.p7s`
+- `<芯片>-sdio.clm_blob`：
+  - **BCM4339：官方 `linux-firmware` 没有独立文件**（404 属正常，CLM 信息已内嵌在 `brcmfmac4339-sdio.bin` 中），可直接跳过。
+  - 其他芯片可先尝试 `https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/brcm/<芯片>-sdio.clm_blob`；若同样 404，说明该芯片也没有独立 CLM blob。
+  - 只有确认设备确实需要独立 CLM 时，才从设备原厂固件或社区资源提取后放入本地目录。
+- 板级 NVRAM 文件名形如 `brcmfmac4339-sdio.<板型>.bin`，需要从该机型的原厂固件或社区资源提取；找不到也没关系，脚本会把通用 `<芯片>-sdio.txt` 的 `country` 改成 `CN` 作为折中。设备 dmesg 里若出现 `Direct firmware load for brcm/xxx failed`，那个 `xxx` 就是需要的文件名。
 
 ---
 
@@ -115,11 +143,12 @@ sudo reboot
 # 全面诊断（只读，最常用）
 sudo /usr/local/sbin/fnnas-brcmfmac-sdio-fix --check
 
-# 修复（优先用缓存，缺失时在线下载）
+# 修复（优先级：本地目录 > 缓存 > 在线下载）
 sudo /usr/local/sbin/fnnas-brcmfmac-sdio-fix --fix
 
-# 离线修复
-sudo /usr/local/sbin/fnnas-brcmfmac-sdio-fix --fix-offline /path/to/files
+# 本地更新 / 离线修复
+sudo /usr/local/sbin/fnnas-brcmfmac-sdio-fix --fix-local /path/to/files
+# --fix-offline /path/to/files 与上面的命令等价
 
 # 查看 OTA 恢复服务状态
 sudo systemctl status fnnas-brcmfmac-sdio-fix.service
@@ -136,10 +165,10 @@ sudo tail -f /var/log/fnnas-brcmfmac-sdio-fix.log
 
 1. **regulatory.db**：备份原文件，删除可能存在的 Debian alternatives 符号链接，安装官方签名的 `regulatory.db` + `.p7s`。
 2. **监管域持久化**：写 `/etc/default/crda` 的 `REGDOMAIN=CN`，并添加 udev 规则，在无线设备加入时执行 `iw reg set CN`。
-3. **CLM blob**：安装 `<芯片>-sdio.clm_blob` 到 `/lib/firmware/brcm/`。
-4. **NVRAM**：自动探测板级文件名；优先安装缓存中的板级 NVRAM，否则把通用 `.txt` 的 `country` 改为 `CN`。
+3. **CLM blob（可选）**：若本地目录或官方源提供 `<芯片>-sdio.clm_blob`，安装到 `/lib/firmware/brcm/`；BCM4339 官方源没有该文件时自动跳过，不影响整体修复。
+4. **NVRAM**：自动探测板级文件名；优先安装本地目录/缓存中的板级 NVRAM，否则把通用 `.txt` 的 `country` 改为 `CN`。
 5. **省电与 P2P**：写 NetworkManager 配置 `wifi.powersave=2` 关闭省电（博通网卡在省电模式下更容易掉线）。
-6. **缓存与自恢复**：所有下载的文件同时存入 `/etc/fnnas-brcmfmac-sdio-fix/cache/`；开机服务校验并在必要时恢复。
+6. **缓存与自恢复**：本地目录/下载得到的文件同时存入 `/etc/fnnas-brcmfmac-sdio-fix/cache/`；开机服务校验并在必要时恢复。
 7. 重载无线驱动与 NetworkManager；**regulatory.db 需要重启内核才会重新校验**，脚本完成后请重启一次。
 
 原文件备份在 `/var/backups/fnnas-brcmfmac-sdio-fix/`，需要回退时可从中取回。
@@ -152,7 +181,8 @@ sudo tail -f /var/log/fnnas-brcmfmac-sdio-fix.log
 
 ```bash
 sudo dmesg | grep -E 'regulatory|clm_blob|brcmfmac'
-# 期望：没有 "malformed or signature is missing/invalid"，没有 "no clm_blob available"
+# 期望：没有 "malformed or signature is missing/invalid"
+# "no clm_blob available" 在 BCM4339 上是可选提示；若 5GHz 信道明显受限，再从本地目录提供独立 CLM blob
 
 iw reg get | head -3
 # 期望：country CN

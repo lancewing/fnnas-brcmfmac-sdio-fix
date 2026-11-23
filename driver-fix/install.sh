@@ -8,6 +8,9 @@
 #   sudo bash install.sh --no-autorestore   # 不启用 OTA 开机恢复
 #   sudo bash install.sh --with-watchdog    # 同时启用网络自愈守护（可选）
 #   sudo bash install.sh --uninstall        # 卸载
+#
+# 本地更新: 把 regulatory.db / regulatory.db.p7s / <芯片>-sdio.clm_blob /
+#           板级 NVRAM 放到本目录的 local-files/ 后重跑本脚本即可优先本地安装。
 # ==============================================================================
 
 set -u
@@ -17,6 +20,7 @@ SRC_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SBIN="/usr/local/sbin/fnnas-brcmfmac-sdio-fix"
 UNIT="/etc/systemd/system/fnnas-brcmfmac-sdio-fix.service"
 DOC_DIR="/usr/local/share/doc/fnnas-brcmfmac-sdio-fix"
+LOCAL_DIR="/etc/fnnas-brcmfmac-sdio-fix/local-files"
 DO_FIX=1
 DO_AUTORESTORE=1
 DO_WATCHDOG=0
@@ -57,10 +61,14 @@ done
 command -v systemctl >/dev/null 2>&1 || die "找不到 systemctl"
 
 # ---------- 1. 安装文件 ----------
-mkdir -p "$(dirname "$SBIN")" "$(dirname "$UNIT")" "$DOC_DIR" /etc/fnnas-brcmfmac-sdio-fix/cache
+mkdir -p "$(dirname "$SBIN")" "$(dirname "$UNIT")" "$DOC_DIR" /etc/fnnas-brcmfmac-sdio-fix/cache "$LOCAL_DIR"
 install -m 755 "$SRC_DIR/fnnas-brcmfmac-sdio-fix.sh" "$SBIN"
 install -m 644 "$SRC_DIR/fnnas-brcmfmac-sdio-fix.service" "$UNIT"
 [[ -f "$SRC_DIR/README.md" ]] && install -m 644 "$SRC_DIR/README.md" "$DOC_DIR/README.md"
+if [[ -d "$SRC_DIR/local-files" ]]; then
+    cp -a "$SRC_DIR/local-files/." "$LOCAL_DIR/" 2>/dev/null || warn "复制本地更新文件失败：$SRC_DIR/local-files"
+    info "已载入本地更新文件: $SRC_DIR/local-files -> $LOCAL_DIR"
+fi
 info "已安装 $SBIN 与 $UNIT"
 
 # ---------- 2. 安装前诊断 ----------
@@ -70,7 +78,7 @@ echo ""
 
 # ---------- 3. 执行修复 ----------
 if [[ $DO_FIX -eq 1 ]]; then
-    info "开始修复（会尝试下载官方文件；网络不通时脚本会提示离线方案）"
+    info "开始修复（本地目录优先，缺失时尝试在线下载；下载失败请按提示改用本地文件）"
     "$SBIN" --fix || warn "自动修复未全部成功，请查看 /var/log/fnnas-brcmfmac-sdio-fix.log"
 else
     info "按 --no-fix 要求，跳过修复"
@@ -102,6 +110,8 @@ fi
 echo "------------------------------------------------------------"
 info "诊断:   sudo $SBIN --check"
 info "修复:   sudo $SBIN --fix"
+info "本地更新: sudo $SBIN --fix-local /path/to/files"
+info "本地目录: $LOCAL_DIR  （下载失败时把文件放这里后重跑 --fix）"
 info "日志:   sudo tail -f /var/log/fnnas-brcmfmac-sdio-fix.log"
 info "缓存:   /etc/fnnas-brcmfmac-sdio-fix/cache  （OTA 后靠它自动恢复，请勿删除）"
 echo "------------------------------------------------------------"

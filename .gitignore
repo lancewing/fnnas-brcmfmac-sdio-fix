@@ -14,3 +14,6 @@ reset-times
 .idea/
 .DS_Store
 Thumbs.db
+
+# 本地更新固件文件（不入库）
+driver-fix/local-files/
